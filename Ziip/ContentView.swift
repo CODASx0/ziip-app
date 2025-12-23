@@ -8,19 +8,32 @@
 import SwiftUI
 import PhotosUI
 import Photos
+import AVFoundation
 
 struct ContentView: View {
     @State private var selectedItems: [PhotosPickerItem] = []
-    @State private var thumbnails: [UIImage] = []
+    @State private var mediaItems: [MediaItem] = []
     @State private var selectedRatio: AspectRatio = .ratio16_9
     @State private var isProcessing = false
     @State private var processingProgress: Double = 0
     @State private var isComplete = false
-    @State private var processedCount = 0
+    @State private var processedImageCount = 0
+    @State private var processedVideoCount = 0
     @State private var showAlert = false
     @State private var alertMessage = ""
     
     private let imageProcessor = ImageProcessor()
+    private let videoProcessor = VideoProcessor()
+    
+    /// 当前选择的图片数量
+    private var imageCount: Int {
+        mediaItems.filter { $0.type == .image }.count
+    }
+    
+    /// 当前选择的视频数量
+    private var videoCount: Int {
+        mediaItems.filter { $0.type == .video }.count
+    }
     
     var body: some View {
         NavigationStack {
@@ -33,15 +46,21 @@ struct ContentView: View {
                 
                 
                 // 2. 内容区域
-                if thumbnails.isEmpty {
+                if mediaItems.isEmpty {
                     emptyState
                 } else {
                     PhotoGridView(
-                        images: thumbnails,
+                        mediaItems: mediaItems,
                         targetRatio: selectedRatio
                     ) { index in
                         withAnimation {
-                            if index < thumbnails.count { thumbnails.remove(at: index) }
+                            if index < mediaItems.count { 
+                                // 清理视频临时文件
+                                if let url = mediaItems[index].videoURL {
+                                    try? FileManager.default.removeItem(at: url)
+                                }
+                                mediaItems.remove(at: index) 
+                            }
                             if index < selectedItems.count { selectedItems.remove(at: index) }
                         }
                     }
@@ -63,7 +82,9 @@ struct ContentView: View {
                 if isProcessing || isComplete {
                     ProcessingView(
                         progress: processingProgress,
-                        totalCount: selectedItems.count,
+                        totalCount: mediaItems.count,
+                        imageCount: processedImageCount,
+                        videoCount: processedVideoCount,
                         isComplete: isComplete
                     ) {
                         resetState()
@@ -102,11 +123,11 @@ struct ContentView: View {
                 .font(.system(size: 60))
                 .foregroundStyle(.tertiary)
             
-            Text("选择照片开始处理")
+            Text("选择照片或视频开始处理")
                 .font(.headline)
                 .foregroundStyle(.secondary)
             
-            Text("点击下方按钮从相册中选择照片")
+            Text("点击下方按钮从相册中选择")
                 .font(.subheadline)
                 .foregroundStyle(.tertiary)
             
@@ -121,13 +142,13 @@ struct ContentView: View {
             
             
             HStack(spacing: 16) {
-                // 选择照片按钮
+                // 选择媒体按钮
                 PhotosPicker(
                     selection: $selectedItems,
                     maxSelectionCount: PhotoPickerConfiguration.maxSelectionCount,
                     matching: PhotoPickerConfiguration.filter
                 ) {
-                    Label("选择照片", systemImage: "photo.badge.plus")
+                    Label("选择媒体", systemImage: "photo.badge.plus")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
@@ -135,7 +156,7 @@ struct ContentView: View {
                 .tint(.white)
                 .onChange(of: selectedItems) { oldValue, newValue in
                     Task {
-                        await loadThumbnails(from: newValue)
+                        await loadMediaItems(from: newValue)
                     }
                 }
                 .glassEffect()
@@ -143,7 +164,7 @@ struct ContentView: View {
                 // 导出按钮
                 Button {
                     Task {
-                        await processImages()
+                        await processMedia()
                     }
                 } label: {
                     HStack(spacing: 6) {
@@ -171,23 +192,34 @@ struct ContentView: View {
     
     // MARK: - Methods
     
-    private func loadThumbnails(from items: [PhotosPickerItem]) async {
-        var newThumbnails: [UIImage] = []
+    private func loadMediaItems(from items: [PhotosPickerItem]) async {
+        var newMediaItems: [MediaItem] = []
         
         for item in items {
-            if let data = try? await item.loadTransferable(type: Data.self),
-               let thumbnail = imageProcessor.loadThumbnail(from: data) {
-                newThumbnails.append(thumbnail)
+            // 检查是否为视频
+            if item.supportedContentTypes.contains(where: { $0.conforms(to: .movie) || $0.conforms(to: .video) }) {
+                // 加载视频
+                if let movie = try? await item.loadTransferable(type: VideoTransferable.self) {
+                    let thumbnail = videoProcessor.generateThumbnail(from: movie.url) ?? UIImage(systemName: "video")!
+                    let duration = await videoProcessor.getVideoDuration(from: movie.url)
+                    newMediaItems.append(.video(thumbnail: thumbnail, url: movie.url, duration: duration))
+                }
+            } else {
+                // 加载图片
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let thumbnail = imageProcessor.loadThumbnail(from: data) {
+                    newMediaItems.append(.image(thumbnail: thumbnail, data: data))
+                }
             }
         }
         
         await MainActor.run {
-            thumbnails = newThumbnails
+            mediaItems = newMediaItems
         }
     }
     
-    private func processImages() async {
-        guard !selectedItems.isEmpty else { return }
+    private func processMedia() async {
+        guard !mediaItems.isEmpty else { return }
         
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else {
@@ -198,19 +230,52 @@ struct ContentView: View {
         
         isProcessing = true
         processingProgress = 0
+        processedImageCount = 0
+        processedVideoCount = 0
         
-        processedCount = await imageProcessor.processAndSaveImages(
-            selectedItems,
-            to: selectedRatio
-        ) { progress in
-            processingProgress = progress
+        let total = mediaItems.count
+        var currentIndex = 0
+        
+        for item in mediaItems {
+            var success = false
+            
+            switch item.type {
+            case .image:
+                if let data = item.data,
+                   let originalImage = UIImage(data: data),
+                   let processedImage = imageProcessor.stretchImage(originalImage, to: selectedRatio) {
+                    do {
+                        try await PHPhotoLibrary.shared().performChanges {
+                            PHAssetChangeRequest.creationRequestForAsset(from: processedImage)
+                        }
+                        success = true
+                        processedImageCount += 1
+                    } catch {
+                        print("保存图片失败: \(error)")
+                    }
+                }
+                
+            case .video:
+                if let url = item.videoURL {
+                    success = await videoProcessor.stretchAndSaveVideo(from: url, to: selectedRatio)
+                    if success {
+                        processedVideoCount += 1
+                    }
+                }
+            }
+            
+            currentIndex += 1
+            let progress = Double(currentIndex) / Double(total)
+            await MainActor.run {
+                processingProgress = progress
+            }
         }
         
-        if processedCount > 0 {
+        if processedImageCount > 0 || processedVideoCount > 0 {
             isComplete = true
         } else {
             isProcessing = false
-            alertMessage = "处理图片失败"
+            alertMessage = "处理失败"
             showAlert = true
         }
     }
@@ -219,10 +284,39 @@ struct ContentView: View {
         isProcessing = false
         isComplete = false
         processingProgress = 0
-        processedCount = 0
+        processedImageCount = 0
+        processedVideoCount = 0
+        
+        // 清理视频临时文件
+        for item in mediaItems {
+            if let url = item.videoURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        
         withAnimation {
-            thumbnails = []
+            mediaItems = []
             selectedItems = []
+        }
+    }
+}
+
+// MARK: - Video Transferable
+
+/// 用于从 PhotosPicker 加载视频的 Transferable
+struct VideoTransferable: Transferable {
+    let url: URL
+    
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { movie in
+            SentTransferredFile(movie.url)
+        } importing: { received in
+            // 将视频复制到临时目录
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension(received.file.pathExtension)
+            try FileManager.default.copyItem(at: received.file, to: tempURL)
+            return Self(url: tempURL)
         }
     }
 }

@@ -11,11 +11,25 @@ import SwiftUI
 struct ProcessingView: View {
     let progress: Double
     let totalCount: Int
+    let imageCount: Int
+    let videoCount: Int
     let isComplete: Bool
     let onDismiss: () -> Void
     
     var processedCount: Int {
         Int(Double(totalCount) * progress)
+    }
+    
+    /// 完成提示文字
+    private var completionText: String {
+        var parts: [String] = []
+        if imageCount > 0 {
+            parts.append("\(imageCount) 张图片")
+        }
+        if videoCount > 0 {
+            parts.append("\(videoCount) 个视频")
+        }
+        return "已保存 " + parts.joined(separator: "、")
     }
     
     var body: some View {
@@ -31,7 +45,7 @@ struct ProcessingView: View {
                     Text("处理完成")
                         .font(.headline)
                     
-                    Text("已保存 \(totalCount) 张图片")
+                    Text(completionText)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     
@@ -50,6 +64,12 @@ struct ProcessingView: View {
                     Text("正在处理 \(processedCount)/\(totalCount)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    
+                    if videoCount > 0 {
+                        Text("视频处理可能需要较长时间")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
             .padding(24)
@@ -58,5 +78,18 @@ struct ProcessingView: View {
             .shadow(radius: 10)
             .frame(maxWidth: 240)
         }
+    }
+}
+
+// MARK: - 兼容旧接口
+extension ProcessingView {
+    /// 兼容旧接口，默认都是图片
+    init(progress: Double, totalCount: Int, isComplete: Bool, onDismiss: @escaping () -> Void) {
+        self.progress = progress
+        self.totalCount = totalCount
+        self.imageCount = totalCount
+        self.videoCount = 0
+        self.isComplete = isComplete
+        self.onDismiss = onDismiss
     }
 }

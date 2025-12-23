@@ -42,6 +42,6 @@ class PhotoManager {
 /// PhotosPicker 配置
 struct PhotoPickerConfiguration {
     static let maxSelectionCount = 50
-    static let filter: PHPickerFilter = .images
+    /// 支持图片和视频
+    static let filter: PHPickerFilter = .any(of: [.images, .videos])
 }
-

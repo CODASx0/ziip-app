@@ -7,10 +7,10 @@
 
 import SwiftUI
 
-/// 照片网格视图 - 简洁风格
+/// 媒体网格视图 - 简洁风格
 struct PhotoGridView: View {
-    let images: [UIImage] // 实际上是缩略图
-    let targetRatio: AspectRatio // 目标比例
+    let mediaItems: [MediaItem]
+    let targetRatio: AspectRatio
     let onRemove: (Int) -> Void
     
     // 根据当前比例动态计算列配置
@@ -31,34 +31,53 @@ struct PhotoGridView: View {
     var body: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 2) {
-                ForEach(Array(images.enumerated()), id: \.offset) { index, image in
-                    PhotoGridItem(image: image, targetRatio: targetRatio) {
+                ForEach(Array(mediaItems.enumerated()), id: \.element.id) { index, item in
+                    MediaGridItem(item: item, targetRatio: targetRatio) {
                         onRemove(index)
                     }
                 }
             }
             .padding(.bottom, 20)
-            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: columns.count) // 添加平滑过渡动画
+            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: columns.count)
         }
     }
 }
 
-/// 照片网格项目
-struct PhotoGridItem: View {
-    let image: UIImage
+/// 媒体网格项目
+struct MediaGridItem: View {
+    let item: MediaItem
     let targetRatio: AspectRatio
     let onRemove: () -> Void
     
     var body: some View {
         ZStack(alignment: .topTrailing) {
             GeometryReader { geometry in
-                Image(uiImage: image)
+                Image(uiImage: item.thumbnail)
                     .resizable()
                     .frame(width: geometry.size.width, height: geometry.size.height)
             }
-            .aspectRatio(targetRatio.value, contentMode: .fit) // 使用 contentMode: .fit 让容器自适应比例
+            .aspectRatio(targetRatio.value, contentMode: .fit)
             .background(Color.gray.opacity(0.1))
             .clipped()
+            .overlay(alignment: .bottomLeading) {
+                // 视频标识和时长
+                if item.type == .video {
+                    HStack(spacing: 4) {
+                        Image(systemName: "video.fill")
+                            .font(.system(size: 10))
+                        if let duration = item.formattedDuration {
+                            Text(duration)
+                                .font(.system(size: 10, weight: .medium))
+                        }
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(.black.opacity(0.6))
+                    .cornerRadius(4)
+                    .padding(4)
+                }
+            }
             
             // 删除按钮
             Button(action: onRemove) {
@@ -69,5 +88,15 @@ struct PhotoGridItem: View {
             }
             .offset(x: -4, y: 4)
         }
+    }
+}
+
+// MARK: - 兼容旧接口（便于过渡）
+extension PhotoGridView {
+    /// 兼容旧的图片数组接口
+    init(images: [UIImage], targetRatio: AspectRatio, onRemove: @escaping (Int) -> Void) {
+        self.mediaItems = images.map { MediaItem.image(thumbnail: $0, data: Data()) }
+        self.targetRatio = targetRatio
+        self.onRemove = onRemove
     }
 }
